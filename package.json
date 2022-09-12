@@ -1,0 +1,28 @@
+{
+  "name": "crowdfunding-dapp",
+  "version": "1.0.0",
+  "description": "Sandbox crowdfunding dapp to test web3 technologies",
+  "main": "truffle-config.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "test": "truffle test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nvrabii/crowdfunding-dapp.git"
+  },
+  "keywords": [
+    "Dapp",
+    "Solidity",
+    "Web3.js",
+    "Truffle"
+  ],
+  "author": "nvrabii",
+  "license": "MIT",
+  "homepage": "https://github.com/nvrabii/crowdfunding-dapp#readme",
+  "devDependencies": {
+    "truffle": "^5.5.29"
+  }
+}
