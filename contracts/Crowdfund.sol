@@ -11,15 +11,17 @@ contract Crowdfund {
 
 	uint256 public collectedAmount;
 	uint256 public immutable targetAmount;
-	uint256 frozenAmount;
+	uint256 internal _frozenAmount;
 	
 	bool public rescheduledClosure;
+	bool public redeemedFunds;
 	uint256 public closureTimestamp;
+	uint256 public immutable creationTimestamp;
 
 	mapping(address => uint256) public collectedFunds;
   mapping(address => uint256) public scheduledWithdrawals;
 
-	event ScheduledWithdrawal(address issuer, uint256 availableFrom);
+	event ScheduledWithdrawal(address donator, uint256 availableFrom);
 	event WithdrawalSuccess(address donator, uint256 amount);
 	event WithdrawalFailure(address donator);
 	event CrowdfundClosure(uint256 closureTimestamp);
@@ -54,6 +56,7 @@ contract Crowdfund {
 
 		beneficiary = payable(msg.sender);
 		targetAmount = target;
+		creationTimestamp = block.timestamp;
 		closureTimestamp = block.timestamp + duration;
 	}
 
@@ -66,36 +69,37 @@ contract Crowdfund {
 
 	function scheduleWithdrawal() public isDonator isOpen {
 		require (scheduledWithdrawals[msg.sender] == 0, "Message sender has already scheduled a withdrawal");
-		
-		scheduledWithdrawals[msg.sender] = block.timestamp + WITHDRAWAL_DELAY;
-		collectedAmount -= collectedFunds[msg.sender];
-		frozenAmount += collectedFunds[msg.sender];
+	
+		uint256 withdrawalTimestamp = block.timestamp + WITHDRAWAL_DELAY;
 
-		emit ScheduledWithdrawal(msg.sender, block.timestamp + WITHDRAWAL_DELAY);
+		scheduledWithdrawals[msg.sender] = withdrawalTimestamp;
+		collectedAmount -= collectedFunds[msg.sender];
+		_frozenAmount += collectedFunds[msg.sender];
+
+		emit ScheduledWithdrawal(msg.sender, withdrawalTimestamp);
 	}
 
 	function withdraw() public isDonator {
 		uint256 withdrawalTime = scheduledWithdrawals[msg.sender];
 
 		require (withdrawalTime != 0, "Message sender didn't schedule a withdrawal");
-		require (withdrawalTime >= block.timestamp,
+		require (withdrawalTime < block.timestamp,
 			"Message sender cannot withdraw the donation before the scheduled withdrawal time");
 
 		uint256 amount = collectedFunds[msg.sender];
 		
 		delete collectedFunds[msg.sender];
 		delete scheduledWithdrawals[msg.sender];
-		frozenAmount -= amount;
+		_frozenAmount -= amount;
 
 		if (payable(msg.sender).send(collectedFunds[msg.sender])) {
 			emit WithdrawalSuccess(msg.sender, amount);
 		} else {
 			collectedFunds[msg.sender] = amount;
 			scheduledWithdrawals[msg.sender] = withdrawalTime;
-			frozenAmount += amount;
+			_frozenAmount += amount;
 
 			emit WithdrawalFailure(msg.sender);
-
 			revert("Failed to withdraw the donated funds");
 		}
 	}
@@ -110,21 +114,27 @@ contract Crowdfund {
 	}
 
 	function redeemFunds() public isBeneficiary isClosed {
+		require(!redeemedFunds, "Funds have been already redeemed");
+
 		uint256 amount = collectedAmount;
 		delete collectedAmount;
+		redeemedFunds = true;
 
 		if (payable(msg.sender).send(amount)) {
 			emit RedeemSuccess(amount);
 		} else {
 			collectedAmount = amount;
-
+			redeemedFunds = false;
 			emit RedeemFailure();
-
 			revert("Failed to redeem the collected funds");
 		}
 	}
 
 	function min(uint256 x, uint256 y) internal pure returns(uint256) {
 		return x < y ? x : y;
+	}
+
+	function frozenAmount() public view isBeneficiary returns(uint256) {
+		return _frozenAmount;
 	}
 }
