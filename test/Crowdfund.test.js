@@ -1,6 +1,6 @@
 const Crowdfund = artifacts.require("CrowdfundMock");
 
-const CAMPAIGN_DURATION = 10 * 24 * 60 * 60;
+const CAMPAIGN_DURATION = 10 * 24 * 60 * 60; // 10 days
 const WITHDRAWAL_DELAY = 2 * 7 * 24 * 60 * 60; // 2 weeks
 const CLOSURE_DELAY = 4 * 7 * 24 * 60 * 60; // 4 weeks
 const ACCEPTED_TIME_ERROR = 2; // 2 seconds
@@ -18,7 +18,7 @@ contract("Crowdfund", (accounts) => {
     const donator = accounts[1];
 
     before(async () => {
-      //	create a new fund
+      // create a new fund
       crowdfund = await Crowdfund.new(TARGET_AMOUNT, CAMPAIGN_DURATION, {
         from: beneficiary,
       });
