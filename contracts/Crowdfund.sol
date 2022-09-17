@@ -7,134 +7,162 @@ uint256 constant MIN_CAMPAIGN_DURATION = 1 weeks;
 uint256 constant MAX_CAMPAIGN_DURATION = 52 weeks;
 
 contract Crowdfund {
-	address payable beneficiary;
+    address payable beneficiary;
 
-	uint256 public collectedAmount;
-	uint256 public immutable targetAmount;
-	uint256 internal _frozenAmount;
-	
-	bool public rescheduledClosure;
-	bool public redeemedFunds;
-	uint256 public closureTimestamp;
-	uint256 public immutable creationTimestamp;
+    uint256 public collectedAmount;
+    uint256 public immutable targetAmount;
+    uint256 internal _frozenAmount;
 
-	mapping(address => uint256) public collectedFunds;
-  mapping(address => uint256) public scheduledWithdrawals;
+    bool public rescheduledClosure;
+    bool public redeemedFunds;
+    uint256 public closureTimestamp;
+    uint256 public immutable creationTimestamp;
 
-	event ScheduledWithdrawal(address donator, uint256 availableFrom);
-	event WithdrawalSuccess(address donator, uint256 amount);
-	event WithdrawalFailure(address donator);
-	event CrowdfundClosure(uint256 closureTimestamp);
-	event RedeemSuccess(uint256 amount);
-	event RedeemFailure();
+    mapping(address => uint256) public collectedFunds;
+    mapping(address => uint256) public scheduledWithdrawals;
 
-	modifier isOpen() {
-		require(block.timestamp <= closureTimestamp,
-			"Cannot execute this call: the campaign has been closed");
-		_;
-	}
+    event ScheduledWithdrawal(address donator, uint256 availableFrom);
+    event WithdrawalSuccess(address donator, uint256 amount);
+    event WithdrawalFailure(address donator);
+    event CrowdfundClosure(uint256 closureTimestamp);
+    event RedeemSuccess(uint256 amount);
+    event RedeemFailure();
 
-	modifier isClosed() {
-		require(block.timestamp > closureTimestamp, "Cannot execute this call: the campaign is not closed yet");
-		_;
-	}
+    modifier isOpen() {
+        require(
+            getTime() <= closureTimestamp,
+            "Cannot execute this call: the campaign has been closed"
+        );
+        _;
+    }
 
-	modifier isDonator() {
-		require (collectedFunds[msg.sender] != 0, "Message sender is not a donator to this fund");
-		_;
-	}
+    modifier isClosed() {
+        require(
+            getTime() > closureTimestamp,
+            "Cannot execute this call: the campaign is not closed yet"
+        );
+        _;
+    }
 
-	modifier isBeneficiary() {
-		require(msg.sender == beneficiary, "Message sender is not the beneficiary of the fund");
-		_;
-	}
+    modifier isDonator() {
+        require(
+            collectedFunds[msg.sender] != 0,
+            "Message sender is not a donator to this fund"
+        );
+        _;
+    }
 
-	constructor(uint256 target, uint256 duration) {
-		require(target > 0, "A new crowdfunding campaign must have a positive target amount");
-		require(duration >= MIN_CAMPAIGN_DURATION && duration <= MAX_CAMPAIGN_DURATION,
-			"The duration of a new crowdfunding campaign must fit the allowed duration intervals");
+    modifier isBeneficiary() {
+        require(
+            msg.sender == beneficiary,
+            "Message sender is not the beneficiary of the fund"
+        );
+        _;
+    }
 
-		beneficiary = payable(msg.sender);
-		targetAmount = target;
-		creationTimestamp = block.timestamp;
-		closureTimestamp = block.timestamp + duration;
-	}
+    constructor(uint256 target, uint256 duration) {
+        require(
+            target > 0,
+            "A new crowdfunding campaign must have a positive target amount"
+        );
+        require(
+            duration >= MIN_CAMPAIGN_DURATION &&
+                duration <= MAX_CAMPAIGN_DURATION,
+            "The duration of a new crowdfunding campaign must fit the allowed duration intervals"
+        );
 
-	function donate() public payable isOpen {
-		require(msg.value > 0, "Null donations are not allowed");
+        beneficiary = payable(msg.sender);
+        targetAmount = target;
+        creationTimestamp = getTime();
+        closureTimestamp = getTime() + duration;
+    }
 
-		collectedFunds[msg.sender] += msg.value;
-		collectedAmount += msg.value;
-	}
+    function donate() public payable isOpen {
+        require(msg.value > 0, "Null donations are not allowed");
 
-	function scheduleWithdrawal() public isDonator isOpen {
-		require (scheduledWithdrawals[msg.sender] == 0, "Message sender has already scheduled a withdrawal");
-	
-		uint256 withdrawalTimestamp = block.timestamp + WITHDRAWAL_DELAY;
+        collectedFunds[msg.sender] += msg.value;
+        collectedAmount += msg.value;
+    }
 
-		scheduledWithdrawals[msg.sender] = withdrawalTimestamp;
-		collectedAmount -= collectedFunds[msg.sender];
-		_frozenAmount += collectedFunds[msg.sender];
+    function scheduleWithdrawal() public isDonator isOpen {
+        require(
+            scheduledWithdrawals[msg.sender] == 0,
+            "Message sender has already scheduled a withdrawal"
+        );
 
-		emit ScheduledWithdrawal(msg.sender, withdrawalTimestamp);
-	}
+        uint256 withdrawalTimestamp = getTime() + WITHDRAWAL_DELAY;
 
-	function withdraw() public isDonator {
-		uint256 withdrawalTime = scheduledWithdrawals[msg.sender];
+        scheduledWithdrawals[msg.sender] = withdrawalTimestamp;
+        collectedAmount -= collectedFunds[msg.sender];
+        _frozenAmount += collectedFunds[msg.sender];
 
-		require (withdrawalTime != 0, "Message sender didn't schedule a withdrawal");
-		require (withdrawalTime < block.timestamp,
-			"Message sender cannot withdraw the donation before the scheduled withdrawal time");
+        emit ScheduledWithdrawal(msg.sender, withdrawalTimestamp);
+    }
 
-		uint256 amount = collectedFunds[msg.sender];
-		
-		delete collectedFunds[msg.sender];
-		delete scheduledWithdrawals[msg.sender];
-		_frozenAmount -= amount;
+    function withdraw() public isDonator {
+        uint256 withdrawalTime = scheduledWithdrawals[msg.sender];
 
-		if (payable(msg.sender).send(collectedFunds[msg.sender])) {
-			emit WithdrawalSuccess(msg.sender, amount);
-		} else {
-			collectedFunds[msg.sender] = amount;
-			scheduledWithdrawals[msg.sender] = withdrawalTime;
-			_frozenAmount += amount;
+        require(
+            withdrawalTime != 0,
+            "Message sender didn't schedule a withdrawal"
+        );
+        require(
+            withdrawalTime < getTime(),
+            "Message sender cannot withdraw the donation before the scheduled withdrawal time"
+        );
 
-			emit WithdrawalFailure(msg.sender);
-			revert("Failed to withdraw the donated funds");
-		}
-	}
+        uint256 amount = collectedFunds[msg.sender];
 
-	function close() public isBeneficiary isOpen {
-		require(!rescheduledClosure, "The campaign's closure has been already rescheduled");
+        delete collectedFunds[msg.sender];
+        delete scheduledWithdrawals[msg.sender];
+        _frozenAmount -= amount;
 
-		rescheduledClosure = true;
-		closureTimestamp = block.timestamp + CLOSURE_DELAY;
+        if (payable(msg.sender).send(collectedFunds[msg.sender])) {
+            emit WithdrawalSuccess(msg.sender, amount);
+        } else {
+            collectedFunds[msg.sender] = amount;
+            scheduledWithdrawals[msg.sender] = withdrawalTime;
+            _frozenAmount += amount;
 
-		emit CrowdfundClosure(closureTimestamp);
-	}
+            emit WithdrawalFailure(msg.sender);
+            revert("Failed to withdraw the donated funds");
+        }
+    }
 
-	function redeemFunds() public isBeneficiary isClosed {
-		require(!redeemedFunds, "Funds have been already redeemed");
+    function close() public isBeneficiary isOpen {
+        require(
+            !rescheduledClosure,
+            "The campaign's closure has been already rescheduled"
+        );
 
-		uint256 amount = collectedAmount;
-		delete collectedAmount;
-		redeemedFunds = true;
+        rescheduledClosure = true;
+        closureTimestamp = getTime() + CLOSURE_DELAY;
 
-		if (payable(msg.sender).send(amount)) {
-			emit RedeemSuccess(amount);
-		} else {
-			collectedAmount = amount;
-			redeemedFunds = false;
-			emit RedeemFailure();
-			revert("Failed to redeem the collected funds");
-		}
-	}
+        emit CrowdfundClosure(closureTimestamp);
+    }
 
-	function min(uint256 x, uint256 y) internal pure returns(uint256) {
-		return x < y ? x : y;
-	}
+    function redeemFunds() public isBeneficiary isClosed {
+        require(!redeemedFunds, "Funds have been already redeemed");
 
-	function frozenAmount() public view isBeneficiary returns(uint256) {
-		return _frozenAmount;
-	}
+        uint256 amount = collectedAmount;
+        delete collectedAmount;
+        redeemedFunds = true;
+
+        if (payable(msg.sender).send(amount)) {
+            emit RedeemSuccess(amount);
+        } else {
+            collectedAmount = amount;
+            redeemedFunds = false;
+            emit RedeemFailure();
+            revert("Failed to redeem the collected funds");
+        }
+    }
+
+    function min(uint256 x, uint256 y) internal pure returns (uint256) {
+        return x < y ? x : y;
+    }
+
+    function getTime() internal view virtual returns (uint256) {
+        return block.timestamp;
+    }
 }

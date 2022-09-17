@@ -1,233 +1,261 @@
-const Crowdfund = artifacts.require('Crowdfund');
+const Crowdfund = artifacts.require("CrowdfundMock");
 
+const CAMPAIGN_DURATION = 10 * 24 * 60 * 60;
 const WITHDRAWAL_DELAY = 2 * 7 * 24 * 60 * 60; // 2 weeks
 const CLOSURE_DELAY = 4 * 7 * 24 * 60 * 60; // 4 weeks
 const ACCEPTED_TIME_ERROR = 2; // 2 seconds
 
-contract('Crowdfund', (accounts) => {
+const TARGET_AMOUNT = web3.utils.toWei("1000", "wei"); // 1e-15 ether
 
-	describe('Open campaign test cases', async () => {
-		let crowdfund;
+contract("Crowdfund", (accounts) => {
+  let crowdfund;
+  let creationTimestamp;
+  let expectedClosureTimestamp;
 
-		const expectedTargetAmount = 100;
-		const campaignDuration = 10 * 24 * 60 * 60;
-		let expectedClosureTimestamp;
-		let expectedNewClosureTimestamp;
+  const beneficiary = accounts[0];
 
-		let beneficiary = accounts[0];
-		let donator = accounts[1];
+  describe("Open campaign", async () => {
+    const donator = accounts[1];
 
-		before(async () => {
-			const newCrowdfund = await Crowdfund.new(expectedTargetAmount, campaignDuration, { from: beneficiary });
-			crowdfund = await Crowdfund.at(newCrowdfund.address);
+    before(async () => {
+      //	create a new fund
+      crowdfund = await Crowdfund.new(TARGET_AMOUNT, CAMPAIGN_DURATION, {
+        from: beneficiary,
+      });
+      creationTimestamp = (await crowdfund.creationTimestamp()).toNumber();
+      expectedClosureTimestamp = creationTimestamp + CAMPAIGN_DURATION;
+    });
 
-			const creationTimestamp = await crowdfund.creationTimestamp();
-			expectedClosureTimestamp = creationTimestamp.toNumber() + campaignDuration;
-		});
+    it("should return correct initial metadata", async () => {
+      const collectedAmount = await crowdfund.collectedAmount();
+      const targetAmount = await crowdfund.targetAmount();
+      const rescheduledClosure = await crowdfund.rescheduledClosure();
+      const closureTimestamp = await crowdfund.closureTimestamp();
 
-		it('Should return correct initial metadata about the campaign', async () => {
-			const collectedAmount = await crowdfund.collectedAmount();
-			const targetAmount = await crowdfund.targetAmount();
-			const rescheduledClosure = await crowdfund.rescheduledClosure();
-			const closureTimestamp = await crowdfund.closureTimestamp();
+      assert.equal(collectedAmount, 0);
+      assert.equal(TARGET_AMOUNT, targetAmount);
+      assert(!rescheduledClosure);
+      assert.equal(closureTimestamp.toNumber(), expectedClosureTimestamp);
+    });
 
-			assert.equal(collectedAmount, 0);
-			assert.equal(targetAmount, expectedTargetAmount);
-			assert(!rescheduledClosure);
-			assert(closureTimestamp, expectedClosureTimestamp);
-		});
+    it("should donate", async () => {
+      const donation = 100;
 
-		it('Should change the state of the campaign via donation', async () => {
-			const donation = 100;
+      await crowdfund.donate({ from: donator, value: donation });
 
-			await crowdfund.donate({ from: donator, value: donation });
+      const collectedAmount = await crowdfund.collectedAmount();
+      const donatedFunds = await crowdfund.collectedFunds(donator);
 
-			const collectedAmount = await crowdfund.collectedAmount();
-			const donatedFunds = await crowdfund.collectedFunds(donator);
+      assert.equal(collectedAmount.toNumber(), donation);
+      assert.equal(donatedFunds.toNumber(), donation);
+    });
 
-			assert.equal(collectedAmount.toNumber(), donation);
-			assert.equal(donatedFunds.toNumber(), donation);
-		});
+    it("should freeze funds after withdrawal request", async () =>
+      await testFundsFreezeAfterScheduleWithdrawal({ crowdfund, donator }));
 
-		it('Should freeze funds after withdrawal request',
-			async () => await testFundsFreezeAfterScheduleWithdrawal({ crowdfund, donator })
-		);
+    it("should not allow withdrawal before the saved timestamp", async () => {
+      try {
+        await crowdfund.withdraw({ from: donator });
+        assert(false);
+      } catch (error) {
+        assert(
+          error.message.includes(
+            "Message sender cannot withdraw the donation before the scheduled withdrawal time"
+          )
+        );
+      }
+    });
 
-		it('Should not allow withdrawal before the saved timestamp', async () => {
-			try {
-				await crowdfund.withdraw({ from: donator });
-				assert(false);
-			} catch (error) {
-				assert(error.message.includes('Message sender cannot withdraw the donation before the scheduled withdrawal time'));
-			};
-		});
+    it("should close an open campaign", async () => {
+      const interval = 60 * 60;
 
-		it('Should close an open campaign', async () => {
-			const currentBlockTimestamp = await crowdfund.creationTimestamp();
-			const interval = 60 * 60;
-			await advanceBlockAtTime(currentBlockTimestamp.toNumber() + interval);
+      // advance by 1 hour
+      await crowdfund.setTime(creationTimestamp + interval);
 
-			expectedNewClosureTimestamp = currentBlockTimestamp.toNumber() + interval + CLOSURE_DELAY;
+      const expectedNewClosureTimestamp =
+        creationTimestamp + interval + CLOSURE_DELAY;
 
-			const { logs } = await crowdfund.close({ from: beneficiary });
-			const log = logs[0];
+      const { logs } = await crowdfund.close({ from: beneficiary });
+      const log = logs[0];
 
-			const closureTimestamp = await crowdfund.closureTimestamp();
-			const rescheduledClosure = await crowdfund.rescheduledClosure();
+      const closureTimestamp = await crowdfund.closureTimestamp();
+      const rescheduledClosure = await crowdfund.rescheduledClosure();
 
-			assert.equal(log.event, "CrowdfundClosure");
-			assert(Math.abs(log.args.closureTimestamp.toNumber() - expectedNewClosureTimestamp) < ACCEPTED_TIME_ERROR);
-			assert(Math.abs(closureTimestamp.toNumber() - expectedNewClosureTimestamp) < ACCEPTED_TIME_ERROR);
-			assert(rescheduledClosure);
-		});
-	});
+      assert.equal(log.event, "CrowdfundClosure");
+      assertEqualWithError(
+        log.args.closureTimestamp.toNumber(),
+        expectedNewClosureTimestamp,
+        ACCEPTED_TIME_ERROR
+      );
+      assertEqualWithError(
+        closureTimestamp.toNumber(),
+        expectedNewClosureTimestamp,
+        ACCEPTED_TIME_ERROR
+      );
+      assert(rescheduledClosure);
+    });
+  });
 
-	describe('Scheduled for closure campaign test cases', async () => {
-		let crowdfund;
-		const targetAmount = 100;
-		const campaignDuration = 10 * 24 * 60 * 60;
-		let beneficiary = accounts[0];
-		let donator = accounts[1];
+  describe("Scheduled for closure campaign", async () => {
+    const donator = accounts[1];
 
-		before(async () => {
-			const newCrowdfund = await Crowdfund.new(targetAmount, campaignDuration, { from: beneficiary });
-			crowdfund = await Crowdfund.at(newCrowdfund.address);
+    before(async () => {
+      // create a new crowdfund
+      crowdfund = await Crowdfund.new(TARGET_AMOUNT, CAMPAIGN_DURATION, {
+        from: beneficiary,
+      });
 
-			creationTimestamp = (await crowdfund.creationTimestamp()).toNumber();
+      // close the fund
+      await crowdfund.close({ from: beneficiary });
+    });
 
-			await crowdfund.close({ from: beneficiary });
-			closureTimestamp = (await crowdfund.closureTimestamp({ from: beneficiary })).toNumber();
-		});
+    it("should donate", async () => {
+      const amount = 42;
 
-		it('Should be able to donate', async () => {
-			const amount = 42;
+      await crowdfund.donate({ from: donator, value: 42 });
 
-			await crowdfund.donate({ from: donator, value: 42 });
+      const collectedAmount = (await crowdfund.collectedAmount()).toNumber();
+      const collectedFunds = (
+        await crowdfund.collectedFunds(donator)
+      ).toNumber();
 
-			const collectedAmount = (await crowdfund.collectedAmount()).toNumber();
-			const collectedFunds = (await crowdfund.collectedFunds(donator)).toNumber();
-			assert.equal(collectedAmount, amount);
-			assert.equal(collectedFunds, amount);
-		});
+      assert.equal(collectedAmount, amount);
+      assert.equal(collectedFunds, amount);
+    });
 
-		it('Should freeze funds after withdrawal request',
-			async () => await testFundsFreezeAfterScheduleWithdrawal({ crowdfund, donator })
-		);
+    it("should freeze funds after withdrawal request", async () =>
+      await testFundsFreezeAfterScheduleWithdrawal({ crowdfund, donator }));
 
-		it('Should not close an already scheduled for closure campaign', async () => {
-			try {
-				await crowdfund.close({ from: beneficiary });
-				assert(false);
-			} catch (error) {
-				assert(error.message.includes('The campaign\'s closure has been already rescheduled'));
-			}
-		});
-	});
+    it("should not close an already scheduled for closure campaign", async () => {
+      try {
+        await crowdfund.close({ from: beneficiary });
+        assert(false);
+      } catch (error) {
+        assert(
+          error.message.includes(
+            "The campaign's closure has been already rescheduled"
+          )
+        );
+      }
+    });
+  });
 
+  describe("Closed campaign", async () => {
+    const donators = [
+      { from: accounts[1], value: 42 },
+      { from: accounts[2], value: 66 },
+    ];
 
-	describe('Closed campaign test cases', async () => {
-		let crowdfund;
-		const targetAmount = 100;
-		const campaignDuration = 10 * 24 * 60 * 60;
-		let beneficiary = accounts[0];
-		let donators = [
-			{ from: accounts[1], value: 42 },
-			{ from: accounts[2], value: 66 }
-		];
+    before(async () => {
+      // create a new crowdfund
+      crowdfund = await Crowdfund.new(TARGET_AMOUNT, CAMPAIGN_DURATION, {
+        from: beneficiary,
+      });
+      creationTimestamp = (await crowdfund.creationTimestamp()).toNumber();
+      expectedClosureTimestamp = creationTimestamp + CAMPAIGN_DURATION;
 
-		before(async () => {
-			const newCrowdfund = await Crowdfund.new(targetAmount, campaignDuration, { from: beneficiary });
-			crowdfund = await Crowdfund.at(newCrowdfund.address);
+      // close the fund
+      await crowdfund.close({ from: beneficiary });
+      expectedClosureTimestamp = (
+        await crowdfund.closureTimestamp({ from: beneficiary })
+      ).toNumber();
 
-			await crowdfund.close({ from: beneficiary });
-			const closureTimestamp = (await crowdfund.closureTimestamp({ from: beneficiary })).toNumber();
+      // two donators will donate in the 'scheduled for closure' state
+      await crowdfund.donate(donators[0]);
+      await crowdfund.donate(donators[1]);
 
-			await crowdfund.donate(donators[0]);
-			await crowdfund.donate(donators[1]);
-			await crowdfund.scheduleWithdrawal({ from: donators[1].from });
+      // one donator will schedule a withdrawal
+      await crowdfund.scheduleWithdrawal({ from: donators[1].from });
 
-			await advanceBlockAtTime(closureTimestamp + 10);
-		});
+      // set time past expectedClosureTimestamp
+      await crowdfund.setTime(expectedClosureTimestamp + 10);
+    });
 
-		it('Should be able to redeem', async () => {
-			const { logs } = await crowdfund.redeemFunds({ from: beneficiary });
-			const log = logs[0];
-			const expectedCollectedAmount = donators[0].value;
+    it("should redeem", async () => {
+      const { logs } = await crowdfund.redeemFunds({ from: beneficiary });
+      const log = logs[0];
+      const expectedCollectedAmount = donators[0].value;
 
-			assert.equal(log.event, 'RedeemSuccess');
-			assert.equal(log.args.amount.toNumber(), expectedCollectedAmount);
-		});
+      assert.equal(log.event, "RedeemSuccess");
+      assert.equal(log.args.amount.toNumber(), expectedCollectedAmount);
+    });
 
-		it('Shouldn\'t be able to redeem twice', async () => {
-			try {
-				await crowdfund.redeemFunds({ from: beneficiary });
-				assert(false);
-			} catch (error) {
-				assert(error.message.includes('Funds have been already redeemed'));
-			}
-		});
+    it("shoul not redeem twice", async () => {
+      try {
+        await crowdfund.redeemFunds({ from: beneficiary });
+        assert(false);
+      } catch (error) {
+        assert(error.message.includes("Funds have been already redeemed"));
+      }
+    });
 
-		it('Should be able to withdraw', async () => {
-			const { logs } = await crowdfund.withdraw({ from: donators[1].from });
-			const log = logs[0];
-			const frozenAmount = (await crowdfund.frozenAmount()).toNumber();
+    it("should withdraw", async () => {
+      const { logs } = await crowdfund.withdraw({ from: donators[1].from });
+      const log = logs[0];
+      const frozenAmount = (await crowdfund.frozenAmount()).toNumber();
 
-			assert.equal(log.event, 'WithdrawalSuccess');
-			assert.equal(log.args.donator, donators[1].from);
-			assert.equal(log.args.amount, donators[1].value);
-			assert.equal(frozenAmount, 0);
-		});
+      assert.equal(log.event, "WithdrawalSuccess");
+      assert.equal(log.args.donator, donators[1].from);
+      assert.equal(log.args.amount, donators[1].value);
+      assert.equal(frozenAmount, 0);
+    });
 
-		it('Shouldn\'t be able to donate', async () => {
-			try {
-				await crowdfund.donate(donators[1]);
-				assert(false);
-			} catch (error) {
-				assert(error.message.includes('Cannot execute this call: the campaign has been closed'));
-			}
-		});
+    it("should not donate", async () => {
+      try {
+        await crowdfund.donate(donators[1]);
+        assert(false);
+      } catch (error) {
+        assert(
+          error.message.includes(
+            "Cannot execute this call: the campaign has been closed"
+          )
+        );
+      }
+    });
 
-		it('Shouldn\'t be able to schedule withdrawal', async () => {
-			try {
-				await crowdfund.scheduleWithdrawal({ from: donators[0].from });
-				assert(false);
-			} catch (error) {
-				assert(error.message.includes('Cannot execute this call: the campaign has been closed'));
-			}
-		})
-	});
+    it("should not schedule withdrawal", async () => {
+      try {
+        await crowdfund.scheduleWithdrawal({ from: donators[0].from });
+        assert(false);
+      } catch (error) {
+        assert(
+          error.message.includes(
+            "Cannot execute this call: the campaign has been closed"
+          )
+        );
+      }
+    });
+  });
 });
 
-const advanceBlockAtTime = (time) => {
-	return new Promise((resolve, reject) => {
-		web3.currentProvider.send(
-			{
-				jsonrpc: "2.0",
-				method: "evm_mine",
-				params: [time],
-				id: new Date().getTime(),
-			},
-			(err, _) => err ? reject(err) : resolve(web3.eth.getBlock("latest").hash),
-		);
-	});
-};
-
 async function testFundsFreezeAfterScheduleWithdrawal({ crowdfund, donator }) {
-	const expectedFrozenAmount = await crowdfund.collectedFunds(donator);
+  const expectedFrozenAmount = await crowdfund.collectedFunds(donator);
 
-	const { logs } = await crowdfund.scheduleWithdrawal({ from: donator });
+  const { logs } = await crowdfund.scheduleWithdrawal({ from: donator });
 
-	const log = logs[0];
-	const frozenAmount = await crowdfund.frozenAmount();
-	const collectedAmount = await crowdfund.collectedAmount();
-	const scheduledWithdrawal = await crowdfund.scheduledWithdrawals(donator);
-	const creationTimestamp = await crowdfund.creationTimestamp();
-	const expectedAvailableFrom = creationTimestamp.toNumber() + WITHDRAWAL_DELAY;
+  const log = logs[0];
+  const frozenAmount = await crowdfund.frozenAmount();
+  const collectedAmount = await crowdfund.collectedAmount();
+  const scheduledWithdrawal = await crowdfund.scheduledWithdrawals(donator);
+  const creationTimestamp = await crowdfund.creationTimestamp();
+  const expectedAvailableFrom = creationTimestamp.toNumber() + WITHDRAWAL_DELAY;
 
-	assert.equal(log.event, 'ScheduledWithdrawal');
-	assert.equal(log.args.donator, donator);
-	assert(Math.abs(log.args.availableFrom.toNumber() - expectedAvailableFrom) < ACCEPTED_TIME_ERROR);
-	assert(Math.abs(scheduledWithdrawal.toNumber() - expectedAvailableFrom) < ACCEPTED_TIME_ERROR);
-	assert.equal(frozenAmount.toNumber(), expectedFrozenAmount.toNumber());
-	assert.equal(collectedAmount.toNumber(), 0);
+  assert.equal(log.event, "ScheduledWithdrawal");
+  assert.equal(log.args.donator, donator);
+  assertEqualWithError(
+    log.args.availableFrom.toNumber(),
+    expectedAvailableFrom,
+    ACCEPTED_TIME_ERROR
+  );
+  assertEqualWithError(
+    scheduledWithdrawal.toNumber(),
+    expectedAvailableFrom,
+    ACCEPTED_TIME_ERROR
+  );
+  assert.equal(frozenAmount.toNumber(), expectedFrozenAmount.toNumber());
+  assert.equal(collectedAmount.toNumber(), 0);
+}
+
+function assertEqualWithError(x, y, error) {
+  assert(Math.abs(x - y) < error);
 }
